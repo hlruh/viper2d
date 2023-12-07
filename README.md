@@ -1,5 +1,5 @@
 <a href="https://ascl.net/2108.006"><img src="https://img.shields.io/badge/ascl-2108.006-blue.svg?colorB=262255" alt="ascl:2108.006" /></a>
-
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/hlruh/viper2d/HEAD?labpath=https%3A%2F%2Fgithub.com%2Fhlruh%2Fviper2d%2Fblob%2Fmaster%2Ftest_model.ipynb)
 
 # viper - Velocity and IP EstimatoR
 
