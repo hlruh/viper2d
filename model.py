@@ -20,9 +20,10 @@
 import numpy as np
 from scipy.optimize import curve_fit
 from scipy.special import erf
+from scipy.signal import convolve2d
+from scipy.interpolate import griddata
 from astropy.modeling.models import Voigt1D
 
-from gplot import *
 
 c = 3e5   # [km/s] speed of light
 
@@ -145,29 +146,61 @@ def pade(x, a, b):
     y = poly(x, a) / (1+x*poly(x, b))
     return y
 
+def coord_trafo(XY, shift_X, shift_Y, Phi):
+    # coordinate transformation
+    X,Y = XY
+    
+    # Rotate coordinates
+    rotated_X = X * np.cos(Phi) - Y * np.sin(Phi)
+    rotated_Y = X * np.sin(Phi) + Y * np.cos(Phi)
 
+    # Shift/Shear coordinates along x and y axis
+    shifted_rotated_X = rotated_X + poly(rotated_Y,shift_X)
+    shifted_rotated_Y = poly(rotated_X,shift_Y) + rotated_Y
+
+    return shifted_rotated_X,shifted_rotated_Y
+    
 class model:
     '''
     The forward model.
 
     '''
-    def __init__(self, *args, func_norm=poly, IP_hs=50, xcen=0):
+    def __init__(self, *args, func_norm=poly, IP_v_hs=50, IP_y_hs=50, xcen=0):
         # IP_hs: Half size of the IP (number of sampling knots).
         # xcen: Central pixel (to center polynomial for numeric reason).
-
         self.xcen = xcen
-        self.S_star, self.lnwave_j, self.spec_cell_j, self.fluxes_molec, self.IP = args
+        self.S_star, self.lnwave_j, self.spec_cell_j, self.fluxes_molec, self.IP_v, self.IP_y = args
         # convolving with IP will reduce the valid wavelength range
         self.dx = self.lnwave_j[1] - self.lnwave_j[0]   # step size of the uniform sampled grid
-        self.IP_hs = IP_hs
-        self.vk = np.arange(-IP_hs, IP_hs+1) * self.dx * c
-        self.lnwave_j_eff = self.lnwave_j[IP_hs:-IP_hs]    # valid grid
+        self.dy = 1 # step size in pixel
+        self.IP_v_hs = IP_v_hs
+        self.IP_y_hs = IP_y_hs
+        self.vk = np.arange(-IP_v_hs, IP_v_hs+1) * self.dx * c
+        self.yk = np.arange(-IP_y_hs, IP_y_hs+1) * self.dy
+        self.lnwave_j_eff = self.lnwave_j[IP_v_hs:-IP_v_hs]    # valid grid
+        self.y_j_eff = self.yk
         self.func_norm = func_norm
         #print("sampling [km/s]:", self.dx*c)
 
-    def __call__(self, pixel, rv=0, norm=[1], wave=[], ip=[], atm=[], bkg=[0], ipB=[]):
+    def generate_ip2d(self,coeff_ip_v,coeff_ip_y,ip_phi,ip_shift_v,ip_shift_y):
+        
+        # Create a coordinate grid
+        VK, YK = np.meshgrid(self.vk, self.yk)
+
+        # Rotate coordinates
+        rotated_VK = VK * np.cos(ip_phi) - YK * np.sin(ip_phi) / self.dy * self.dx * c
+        rotated_YK = VK * np.sin(ip_phi) / self.dx / c * self.dy + YK * np.cos(ip_phi)
+        
+        # Shift/Shear coordinates along v and y axis
+        shifted_rotated_VK = rotated_VK + poly(rotated_YK,ip_shift_v)
+        shifted_rotated_YK = poly(rotated_VK,ip_shift_y) + rotated_YK
+
+        return self.IP_v(shifted_rotated_VK, *coeff_ip_v) * self.IP_y(shifted_rotated_YK, *coeff_ip_y)
+
+    
+    def __call__(self, pixel_coords, rv=0, norm=[1], wave=[], pixel_shift_x=[0], pixel_shift_y=[0], pixel_rot=0, ip_v=[], ip_y=[], ip_shift_v=[0], ip_phi=0, ip_shift_y=[0], atm=[], bkg=[0], ipB=[], lookip=False, lookS=False):
         # renaming (coeff is ok prefix below, but too verbose for par)
-        coeff_norm, coeff_wave, coeff_ip, coeff_atm, coeff_bkg, coeff_ipB = norm, wave, ip, atm, bkg, ipB
+        coeff_norm, coeff_wave, pixel_shift_x, pixel_shift_y, pixel_rot, coeff_ip_v, coeff_ip_y, ip_phi, ip_shift_v, ip_shift_y, coeff_atm, coeff_bkg, coeff_ipB = norm, wave, pixel_shift_x, pixel_shift_y, pixel_rot, ip_v, ip_y, ip_phi, ip_shift_v, ip_shift_y, atm, bkg, ipB
 
         spec_gas = 1 * self.spec_cell_j
 
@@ -182,26 +215,64 @@ class model:
             spec_gas *= flux_atm
 
         # IP convolution
-        Sj_eff = np.convolve(self.IP(self.vk, *coeff_ip), self.S_star(self.lnwave_j-rv/c) * (spec_gas + coeff_bkg[0]), mode='valid')
+        IP2D = self.generate_ip2d(coeff_ip_v,coeff_ip_y,ip_phi,ip_shift_v,ip_shift_y)
+        Sj_eff = convolve2d(IP2D,[self.S_star(self.lnwave_j-rv/c) * (spec_gas + coeff_bkg[0])])[:,2*self.IP_v_hs:-2*self.IP_v_hs]
+        
+        if lookip:
+            import matplotlib.pyplot as plt
+            plt.figure()
+            plt.title('2D IP')
+            plt.pcolormesh(IP2D)
+            
+        if 0:
+            import matplotlib.pyplot as plt
+            plt.figure()
+            plt.plot(self.S_star(self.lnwave_j-rv/c) * (spec_gas + coeff_bkg[0]))
 
+            
         if len(coeff_ipB):
             coeff_ipB = [coeff_ipB[0]*coeff_ip[0], *coeff_ip[1:]]
-            Sj_B = np.convolve(self.IP(self.vk, *coeff_ipB), self.S_star(self.lnwave_j-rv/c) * (spec_gas + coeff_bkg[0]), mode='valid')
+            IP2D = self.generate_ip2d(coeff_ipB,coeff_ip_y,ip_phi,ip_shift_v,ip_shift_y)
+            Sj_B = convolve2d(IP2D,[self.S_star(self.lnwave_j-rv/c) * (spec_gas + coeff_bkg[0])])[:,2*self.IP_v_hs:-2*self.IP_v_hs]
+
             Sj_A = Sj_eff
             g = self.lnwave_j_eff - self.lnwave_j_eff[0]
             g /= g[-1]
             Sj_eff = (1-g)*Sj_A + g*Sj_B
 
+        
+        # Transform pixel coordinates
+        x_obs,y_obs = coord_trafo(pixel_coords,pixel_shift_x,pixel_shift_y,pixel_rot)
+        # pixel to wavelength transformation
         # wavelength relation
         #    lam(x) = b0 + b1 * x + b2 * x^2
-        lnwave_obs = np.log(poly(pixel-self.xcen, coeff_wave))
-
+        lnwave_obs = np.log(poly(x_obs-self.xcen, coeff_wave))
+        
         # sampling to pixel
-        Si_eff = np.interp(lnwave_obs, self.lnwave_j_eff, Sj_eff)
+        #Si_eff = np.array([np.interp(lnwave_obs, self.lnwave_j_eff, sj_eff) for sj_eff in Sj_eff])
+        Sj_grid = np.meshgrid(self.lnwave_j_eff,self.y_j_eff)
+        Si_eff = griddata((Sj_grid[0].flatten(), Sj_grid[1].flatten()), Sj_eff.flatten(), (lnwave_obs, y_obs), method='linear',fill_value=0)
 
         # flux normalisation
-        Si_mod = self.func_norm(pixel-self.xcen, coeff_norm) * Si_eff
+        #Si_mod = self.func_norm(pixel-self.xcen, coeff_norm) * Si_eff
+        Si_mod = np.array([self.func_norm(x_obs[i]-self.xcen, coeff_norm) * Si_eff[i] for i in range(Si_eff.shape[0])])
         #Si_mod = self.func_norm((np.exp(lnwave_obs)-b[0]-coeff_norm[-1]), coeff_norm[:-1]) * Si_eff
+        
+        
+        if lookS:
+            import matplotlib.pyplot as plt
+            plt.figure()
+            plt.title('Sj_eff')
+            plt.pcolormesh(Sj_eff)
+            
+            plt.figure()
+            plt.title('Si_eff')
+            plt.pcolormesh(Si_eff)
+            
+            plt.figure()
+            plt.title('Si_mod')
+            plt.pcolormesh(Si_mod)
+            
         return Si_mod
 
     def fit(self, pixel, spec_obs, par, sig=[], **kwargs):
@@ -210,10 +281,10 @@ class model:
         '''
         varykeys, varyvals = zip(*par.vary().items())
 
-        S_model = lambda x, *params: self(x, **(par + dict(zip(varykeys, params))))
+        S_model = lambda x, *params: self(x, **(par + dict(zip(varykeys, params)))).flatten()
         #S_model(pixel, *varyvals)
 
-        params, e_params = curve_fit(S_model, pixel, spec_obs, p0=varyvals, sigma=sig, absolute_sigma=False, epsfcn=1e-12)
+        params, e_params = curve_fit(S_model, pixel, spec_obs.flatten(), p0=varyvals, sigma=sig.flatten(), absolute_sigma=False, epsfcn=1e-12)
 
         pnew = par + dict(zip(varykeys, params))
         # attach uncertainties
