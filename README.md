@@ -6,6 +6,8 @@
 git clone https://github.com/mzechmeister/viper.git
 ```
 
+https://mybinder.org/v2/gh/hlruh/viper2d/HEAD
+
 Create shortcuts:
 ```bash
 ln -s $PWD/viper/viper.py ~/bin/viper
