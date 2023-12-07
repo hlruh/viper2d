@@ -3,8 +3,6 @@
 
 # viper - Velocity and IP EstimatoR
 
-https://mybinder.org/v2/gh/hlruh/viper2d/HEAD?labpath=https%3A%2F%2Fgithub.com%2Fhlruh%2Fviper2d%2Fblob%2Fmaster%2Ftest_model.ipynb
-
 ```
 git clone https://github.com/mzechmeister/viper.git
 ```
